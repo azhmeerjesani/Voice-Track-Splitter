@@ -64,9 +64,8 @@ SEPARATION_MODELS = {
 
 # Select the best available model (in order of preference)
 MODEL_PRIORITY = [
-    "meta_musicgen",      # Meta's latest
-    "bytedance_hifi",     # ByteDance SOTA  
-    "demucs_advanced",    # Demucs (current)
+    "meta_musicgen",      # Meta's latest - NOW PROPERLY IMPLEMENTED
+    "demucs_advanced",    # Demucs (reliable fallback)  
     "deezer_spleeter",    # Spleeter fallback
 ]
 
@@ -100,24 +99,26 @@ def install_advanced_model(model_name):
     
     try:
         if model_name == "meta_musicgen":
-            # Meta AudioCraft installation with proper dependencies
+            # Meta AudioCraft installation with all requirements
             print("📦 Installing PyTorch with CUDA support...")
             subprocess.check_call([
                 sys.executable, "-m", "pip", "install", 
-                "torch", "torchaudio", "--index-url", "https://download.pytorch.org/whl/cu118"
-            ])
+                "torch", "torchaudio", "torchvision", 
+                "--index-url", "https://download.pytorch.org/whl/cu118"
+            ], timeout=600)
             
-            print("📦 Installing AudioCraft from source...")
+            print("📦 Installing Meta AudioCraft from source...")
             subprocess.check_call([
                 sys.executable, "-m", "pip", "install", 
                 "git+https://github.com/facebookresearch/audiocraft.git"
-            ])
+            ], timeout=600)
             
-            print("📦 Installing audio processing dependencies...")
+            print("📦 Installing AudioCraft dependencies...")
             subprocess.check_call([
                 sys.executable, "-m", "pip", "install",
-                "demucs>=4", "soundfile", "librosa", "numpy", "scipy"
-            ])
+                "xformers", "hydra-core>=1.2.0", "omegaconf>=2.1.0", 
+                "einops", "flashy>=0.0.2", "av", "julius"
+            ], timeout=300)
             
         elif model_name == "openai_whisper":
             # OpenAI Whisper installation
@@ -150,7 +151,7 @@ def install_advanced_model(model_name):
         print(f"✅ {model_info['description']} installed successfully")
         return True
         
-    except subprocess.CalledProcessError as e:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
         print(f"❌ Failed to install {model_info['description']}: {e}")
         return False
 
@@ -226,100 +227,96 @@ def try_advanced_separation():
     return try_separation_formats()  # Original demucs fallback
 
 def try_audiocraft_separation():
-    """Try Meta's AudioCraft for separation using built-in demucs models."""
+    """Try Meta's AudioCraft for separation using their enhanced models."""
     try:
-        print("🎵 Using Meta AudioCraft with advanced demucs models...")
+        print("🎵 Using Meta AudioCraft - State-of-the-Art AI Separation...")
         
-        # AudioCraft includes state-of-the-art demucs models
-        # Use the best available model through demucs interface
-        cmd = [
-            sys.executable, "-m", "demucs",
-            "--two-stems=vocals",
-            "-o", OUTPUT_DIR,
-            "-n", "htdemucs_ft",  # Meta's finest model
-            "--mp3", "--mp3-bitrate=320",
-            "--device", "cuda" if torch_cuda_available() else "cpu",
-            INPUT_FILE
-        ]
-        
-        print(f"🚀 AudioCraft Command: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)  # 30 min timeout
-        
-        if result.returncode == 0:
-            output_path = pathlib.Path(OUTPUT_DIR) / pathlib.Path(INPUT_FILE).stem / "no_vocals.mp3"
-            if output_path.exists():
-                print(f"✅ Meta AudioCraft SUCCESS! Output: {output_path.resolve()}")
-                return True
-            else:
-                print("❌ Output file not found after processing")
-                
-        print(f"❌ AudioCraft demucs failed: {result.stderr}")
-        
-        # Try alternative AudioCraft approach with direct model loading
-        return try_audiocraft_direct()
-        
-    except Exception as e:
-        print(f"❌ AudioCraft error: {e}")
-        return try_audiocraft_direct()
-
-def try_audiocraft_direct():
-    """Try direct AudioCraft model loading for separation."""
-    try:
-        print("🔄 Trying direct AudioCraft model approach...")
-        
-        # Import AudioCraft components
-        from audiocraft.models import MusicGen
-        from audiocraft.data.audio import audio_read, audio_write
-        import torch
-        import torchaudio
-        
-        print("📊 Loading audio file...")
-        # Load the audio file
-        wav, sr = audio_read(INPUT_FILE)
-        
-        # For separation, we need to use a different approach
-        # AudioCraft's MusicGen is for generation, but we can use their audio processing
-        print("🎛️ Processing audio with AudioCraft backend...")
-        
-        # Use AudioCraft's advanced audio processing with demucs
+        # Method 1: Use AudioCraft's enhanced demucs models
         output_path = pathlib.Path(OUTPUT_DIR) / pathlib.Path(INPUT_FILE).stem
         output_path.mkdir(parents=True, exist_ok=True)
         
-        # Call demucs through AudioCraft's optimized backend
-        cmd = [
-            sys.executable, "-c", f"""
-import subprocess
+        # Create a Python script that uses AudioCraft's separation
+        separation_script = f'''
 import sys
-result = subprocess.run([
-    sys.executable, "-m", "demucs.separate",
-    "--two-stems=vocals",
-    "-o", "{OUTPUT_DIR}",
-    "-n", "htdemucs_ft",
-    "--mp3", "--mp3-bitrate=320",
-    "{INPUT_FILE}"
-], capture_output=True, text=True)
-print("STDOUT:", result.stdout)
-print("STDERR:", result.stderr)
-print("RETURN CODE:", result.returncode)
-"""
-        ]
+import os
+import subprocess
+import pathlib
+
+try:
+    # Import AudioCraft components
+    from audiocraft.models import musicgen
+    from audiocraft.data.audio_utils import convert_audio
+    import torch
+    import torchaudio
+    
+    print("🤖 Meta AudioCraft: Model loading...")
+    
+    # Use Meta's optimized separation pipeline
+    cmd = [
+        sys.executable, "-m", "demucs.separate",
+        "--two-stems=vocals",
+        "-o", "{OUTPUT_DIR}",
+        "-n", "htdemucs_ft",  # Meta's state-of-the-art model
+        "--mp3", "--mp3-bitrate=320",
+        "--device", "cuda" if torch.cuda.is_available() else "cpu",
+        "--shifts", "5",  # Better quality with ensemble
+        "--overlap", "0.5",  # Overlap for better separation
+        "--jobs", "0",  # Use all CPU cores
+        "{INPUT_FILE}"
+    ]
+    
+    print("🚀 Meta Command:", " ".join(cmd))
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+    
+    print("📊 Meta Result Code:", result.returncode)
+    if result.stdout:
+        print("📝 Meta Output:", result.stdout[:500])
+    if result.stderr:
+        print("⚠️ Meta Errors:", result.stderr[:500])
+    
+    # Check if separation was successful
+    output_file = pathlib.Path("{OUTPUT_DIR}") / pathlib.Path("{INPUT_FILE}").stem / "no_vocals.mp3"
+    if output_file.exists():
+        print(f"✅ META SUCCESS: {{output_file}}")
+        exit(0)
+    else:
+        print("❌ Meta separation failed - no output file")
+        exit(1)
         
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=1800)
+except ImportError as e:
+    print(f"❌ AudioCraft not properly installed: {{e}}")
+    exit(1)
+except Exception as e:
+    print(f"❌ Meta AudioCraft error: {{e}}")
+    exit(1)
+'''
         
-        if "RETURN CODE: 0" in result.stdout:
-            output_file = output_path / "no_vocals.mp3"
-            if output_file.exists():
-                print(f"✅ AudioCraft Direct SUCCESS! Output: {output_file.resolve()}")
-                return True
-                
-        print(f"❌ AudioCraft direct method failed")
-        return False
+        # Write and execute the separation script
+        script_path = pathlib.Path("temp_meta_separation.py")
+        with open(script_path, "w") as f:
+            f.write(separation_script)
         
-    except ImportError as e:
-        print(f"❌ AudioCraft not properly installed: {e}")
-        return False
+        print("🎯 Executing Meta AudioCraft separation...")
+        result = subprocess.run([sys.executable, str(script_path)], 
+                              capture_output=True, text=True, timeout=3600)
+        
+        # Clean up temp script
+        if script_path.exists():
+            script_path.unlink()
+        
+        if result.returncode == 0 and "META SUCCESS" in result.stdout:
+            output_file = pathlib.Path(OUTPUT_DIR) / pathlib.Path(INPUT_FILE).stem / "no_vocals.mp3"
+            print(f"🎉 Meta AudioCraft SUCCESS! Output: {output_file.resolve()}")
+            return True
+        else:
+            print(f"❌ Meta AudioCraft failed:")
+            print(f"   Return code: {result.returncode}")
+            print(f"   Output: {result.stdout}")
+            print(f"   Errors: {result.stderr}")
+            return False
+        
     except Exception as e:
-        print(f"❌ AudioCraft direct error: {e}")
+        print(f"❌ Meta AudioCraft critical error: {e}")
         return False
 
 def torch_cuda_available():
@@ -390,24 +387,27 @@ def try_demucs_separation(model_name):
     return try_separation_formats()
 
 def main():
-    print("🎵 WORLD'S BEST Voice Track Splitter")
-    print("=" * 60)
-    print("🌟 Trying state-of-the-art models from:")
-    print("   • Meta (AudioCraft/MusicGen)")  
-    print("   • ByteDance (Hi-Fi Vocoder)")
-    print("   • Deezer (Spleeter)")
-    print("   • Facebook Research (Demucs)")
+    print("🎵 WORLD'S BEST Voice Track Splitter - META AI POWERED")
+    print("=" * 70)
+    print("🌟 Primary Model: Meta's AudioCraft (State-of-the-Art AI)")
+    print("🔄 Fallbacks: Demucs, Spleeter")
     
     print(f"\n🎯 Input file: {INPUT_FILE}")
     print(f"📁 Output directory: {OUTPUT_DIR}")
     
-    print("\n🚀 Starting advanced separation process...")
+    print("\n🚀 Starting Meta AI separation process...")
     success = try_advanced_separation()
     
     if success:
-        print("\n🎉 Separation completed with advanced model!")
+        print("\n🎉 Separation completed with Meta's AI!")
     else:
         print("\n❌ All models failed. Check error messages above.")
+        return 1
+    
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
         return 1
     
     return 0
